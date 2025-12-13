@@ -1,6 +1,8 @@
 #include <iostream>
 #include <vector>
 #include <queue>
+#include <cstdlib>
+#include <ctime>
 using namespace std;
 
 // ====================== THREAD STATES ==========================
@@ -18,53 +20,59 @@ struct Thread {
     int cpuUsed;
     int priority;
     ThreadState state;
+    string waitingOn;  // NEW: "S1", "S2", "S3", or "-"
 
     Thread(int id, int burst, int prio)
         : id(id), burstTime(burst), cpuUsed(0),
-          priority(prio), state(READY) {}
+          priority(prio), state(READY), waitingOn("-") {}
 };
 
-// ====================== THREAD LIST ============================
 vector<Thread> threadList;
 
 // ====================== SEMAPHORE CLASS ========================
 class Semaphore {
 public:
+    string name;
     int value;
-    queue<int> waitingQueue;
+    queue<int> waitQueue;
 
-    Semaphore(int v) : value(v) {}
+    Semaphore(string name, int val) : name(name), value(val) {}
 
-    void wait(int threadId) {
+    void waitOp(int tid) {
         value--;
         if (value < 0) {
-            cout << "  -> Thread " << threadId << " BLOCKED on semaphore\n";
-            waitingQueue.push(threadId);
-            threadList[threadId].state = BLOCKED;
+            cout << "  -> Thread " << tid << " BLOCKED on " << name << "\n";
+            waitQueue.push(tid);
+            threadList[tid].state = BLOCKED;
+            threadList[tid].waitingOn = name;
         } else {
-            cout << "  -> Thread " << threadId << " acquired semaphore\n";
+            cout << "  -> Thread " << tid << " acquired " << name << "\n";
         }
     }
 
-    void signal() {
+    void signalOp() {
         value++;
-        if (value <= 0 && !waitingQueue.empty()) {
-            int unblockedId = waitingQueue.front();
-            waitingQueue.pop();
-            threadList[unblockedId].state = READY;
-            cout << "  -> Semaphore SIGNAL: Thread "
-                 << unblockedId << " UNBLOCKED\n";
+        if (value <= 0 && !waitQueue.empty()) {
+            int unblocked = waitQueue.front();
+            waitQueue.pop();
+            threadList[unblocked].state = READY;
+            threadList[unblocked].waitingOn = "-";
+            cout << "  -> SIGNAL " << name << ": ublocked Thread "
+                 << unblocked << "\n";
         } else {
-            cout << "  -> Semaphore SIGNAL (no waiting threads)\n";
+            cout << "  -> SIGNAL " << name << ": no waiting threads\n";
         }
     }
 };
 
-// Create a global semaphore
-Semaphore S1(0); // forced blocking version
+// Create 3 semaphores
+Semaphore S1("S1", 1);
+Semaphore S2("S2", 1);
+Semaphore S3("S3", 1);
 
-string stateToStr(ThreadState state) {
-    switch (state) {
+// ====================== VISUALIZATION ==========================
+string stateStr(ThreadState s) {
+    switch (s) {
         case READY: return "READY";
         case RUNNING: return "RUNNING";
         case BLOCKED: return "BLOCKED";
@@ -73,37 +81,35 @@ string stateToStr(ThreadState state) {
     return "UNKNOWN";
 }
 
-void printThreadTable() {
-    cout << "\n-------------------------------------------------------------\n";
+void printTable() {
+    cout << "\n------------------------------------------------------------\n";
     cout << "| TID |   STATE    | CPU USED | BURST |   WAITING ON        |\n";
     cout << "-------------------------------------------------------------\n";
 
     for (auto &t : threadList) {
-        string waiting = "-";
+        string st = stateStr(t.state);
+        int pad = 11 - st.length();
 
-        // If blocked, we show semaphore name
-        if (t.state == BLOCKED) waiting = "S1";
-
-        cout << "|  " << t.id << "   | "
-             << stateToStr(t.state);
-
-        // Adjust spacing for alignment
-        int padding = 11 - stateToStr(t.state).length();
-        while (padding--) cout << " ";
-
+        cout << "|  " << t.id << "   | " << st;
+        while (pad--) cout << " ";
         cout << "|     " << t.cpuUsed
              << "     |   " << t.burstTime
-             << "   |     " << waiting
-             << "           |\n";
+             << "   |     " << t.waitingOn << "           |\n";
     }
 
     cout << "-------------------------------------------------------------\n";
 }
 
+Semaphore* randomSemaphore(){
+    int r = rand() % 3;
+    if (r == 0) return &S1;
+    if (r == 1) return &S2;
+    return &S3;
+}
 
 // ====================== ROUND ROBIN SCHEDULER ==================
-void runRoundRobin(int timeQuantum) {
-    cout << "\n===== Starting Round Robin Scheduler (with blocking) =====\n";
+void runRoundRobin(int quantum) {
+    cout << "\n===== Starting Round Robin Scheduler (Multiple Semaphores) =====\n";
 
     bool allDone = false;
 
@@ -111,85 +117,76 @@ void runRoundRobin(int timeQuantum) {
         allDone = true;
 
         for (auto &t : threadList) {
-            // Skip threads not runnable
+
+            // Skip blocked or terminated threads
             if (t.state == TERMINATED || t.state == BLOCKED)
                 continue;
 
             allDone = false;
-
-            // Make thread RUNNING
             t.state = RUNNING;
             cout << "\n[RUNNING] Thread " << t.id << "\n";
 
-            // Execute for time quantum
-            for (int q = 0; q < timeQuantum; q++) {
-                if (t.cpuUsed < t.burstTime)
-                    t.cpuUsed++;
-
+            for (int q = 0; q < quantum; q++) {
+                t.cpuUsed++;
                 cout << "  Tick: CPU used = " << t.cpuUsed
                      << "/" << t.burstTime << "\n";
 
-                // ---------------- SEMAPHORE DEMO BEHAVIOR ----------------
-                if (t.id == 0 && t.cpuUsed == 3) {
-                    cout << "Thread 0 trying WAIT on S1...\n";
-                    S1.wait(0);
-                    if (t.state == BLOCKED) {
-                        cout << "  Thread 0 BLOCKED - stopping quantum\n";
-                        break;
-                    }
-                }
+                // ---------------- DEMONSTRATION RULES ----------------
+		if(t.cpuUsed >= t.burstTime) {
+		    t.state = TERMINATED;
+		    t.waitingOn = "-";
+		    cout << "  -> Thead " << t.id << " TERMINATED\n";
+		    break;
+		}
 
-                if (t.id == 1 && t.cpuUsed == 4) {
-                    cout << "Thread 1 doing SIGNAL on S1...\n";
-                    S1.signal();
-                }
-                // ----------------------------------------------------------
+		int action = rand() % 100;
 
-                // If thread finished
-                if (t.cpuUsed == t.burstTime) {
-                    t.state = TERMINATED;
-                    cout << "  -> Thread " << t.id << " TERMINATED\n";
-                    break;
-                }
-            }
+		if(action < 10){
+		    Semaphore* s = randomSemaphore();
+		    cout << "Thread " << t.id << " RANDOM WAIT on "
+			 << s->name << "\n";
+		    s->waitOp(t.id);
 
+		    if (t.state == BLOCKED) break;
+		} else if (action < 20) {
+		    Semaphore* s = randomSemaphore();
+		    cout << "Thread " << t.id << " RANDOM SIGNAL "
+			 << s->name << "\n";
+		    s->signalOp();
+		}
+	    }
 
-            if (t.state == RUNNING)
-                t.state = READY; // send back to ready queue
+	    if (t.state == RUNNING)
+		t.state = READY;
 
-        }
-	printThreadTable();
+	    printTable();
+	}
     }
 
 
     cout << "\n===== All Threads Completed =====\n";
 }
 
-// ====================== CREATE THREAD FUNCTION =================
-void createThread(int burst, int priority) {
+// ====================== THREAD CREATION ========================
+void createThread(int burst, int prio) {
     int id = threadList.size();
-    threadList.emplace_back(id, burst, priority);
-    cout << "Thread " << id << " created (burst="
-         << burst << ", priority=" << priority << ")\n";
+    threadList.emplace_back(id, burst, prio);
+    cout << "Thread " << id << " created\n";
 }
 
 // ================================ MAIN ==========================
 int main() {
+    srand(time(0));
 
-    // Create sample threads
-    createThread(10, 1); // Thread 0
-    createThread(6, 2);  // Thread 1
-    createThread(8, 1);  // Thread 2
+    createThread(10, 1);  // Thread 0 (wait S1)
+    createThread(8, 1);   // Thread 1 (wait S2)
+    createThread(9, 2);   // Thread 2 (signal S1)
+    createThread(6, 3);   // Thread 3 (signal S2)
 
     cout << "\nInitial Thread States:\n";
-    for (auto &t : threadList)
-        cout << "Thread " << t.id
-             << " | READY | Burst=" << t.burstTime
-             << " | Priority=" << t.priority << "\n";
+    printTable();
 
-    // Run scheduler with time quantum = 2
     runRoundRobin(2);
 
     return 0;
 }
-
