@@ -36,7 +36,7 @@ public:
     int value;
     queue<int> waitQueue;
 
-    Semaphore(string name, int val) : name(name), value(val) {}
+    Semaphore(string name, int v) : name(name), value(v) {}
 
     void waitOp(int tid) {
         value--;
@@ -45,6 +45,7 @@ public:
             waitQueue.push(tid);
             threadList[tid].state = BLOCKED;
             threadList[tid].waitingOn = name;
+	    waitQueue.push(tid);
         } else {
             cout << "  -> Thread " << tid << " acquired " << name << "\n";
         }
@@ -53,12 +54,11 @@ public:
     void signalOp() {
         value++;
         if (value <= 0 && !waitQueue.empty()) {
-            int unblocked = waitQueue.front();
+            int tid = waitQueue.front();
             waitQueue.pop();
-            threadList[unblocked].state = READY;
-            threadList[unblocked].waitingOn = "-";
-            cout << "  -> SIGNAL " << name << ": ublocked Thread "
-                 << unblocked << "\n";
+	    cout << " -> SIGNAL " << name << ": unblocked Thread " << tid << "\n";
+            threadList[tid].state = READY;
+            threadList[tid].waitingOn = "-";
         } else {
             cout << "  -> SIGNAL " << name << ": no waiting threads\n";
         }
@@ -69,6 +69,50 @@ public:
 Semaphore S1("S1", 1);
 Semaphore S2("S2", 1);
 Semaphore S3("S3", 1);
+
+// ====================== MONITOR CLASS ==========================
+class Monitor {
+public:
+    Semaphore mutex{"MUTEX", 1};
+    queue<int> conditionQueue;
+
+    void enter(int tid) {
+        cout << "Thread " << tid << " ENTER monitor\n";
+        mutex.waitOp(tid);
+    }
+
+    void exitMonitor(int tid) {
+        cout << "Thread " << tid << " EXIT monitor\n";
+        mutex.signalOp();
+    }
+
+    void waitCV(int tid) {
+        cout << "Thread " << tid << " WAIT on MonitorCV\n";
+
+        // Thread releases mutex and becomes BLOCKED
+        conditionQueue.push(tid);
+        threadList[tid].state = BLOCKED;
+        threadList[tid].waitingOn = "MONITOR";
+
+        mutex.signalOp();  // release monitor lock
+    }
+
+    void signalCV(int tid) {
+        cout << "Thread " << tid << " SIGNAL MonitorCV\n";
+
+        if (!conditionQueue.empty()) {
+            int wakingThread = conditionQueue.front();
+            conditionQueue.pop();
+
+            cout << "  -> MonitorCV wakes Thread " << wakingThread << "\n";
+
+            threadList[wakingThread].state = READY;
+            threadList[wakingThread].waitingOn = "-";
+        }
+    }
+};
+
+Monitor monitorObj;
 
 // ====================== VISUALIZATION ==========================
 string stateStr(ThreadState s) {
@@ -100,16 +144,10 @@ void printTable() {
     cout << "-------------------------------------------------------------\n";
 }
 
-Semaphore* randomSemaphore(){
-    int r = rand() % 3;
-    if (r == 0) return &S1;
-    if (r == 1) return &S2;
-    return &S3;
-}
 
 // ====================== ROUND ROBIN SCHEDULER ==================
 void runRoundRobin(int quantum) {
-    cout << "\n===== Starting Round Robin Scheduler (Multiple Semaphores) =====\n";
+    cout << "\n===== Starting Round Robin Scheduler (Monitor Demo) =====\n";
 
     bool allDone = false;
 
@@ -118,51 +156,64 @@ void runRoundRobin(int quantum) {
 
         for (auto &t : threadList) {
 
-            // Skip blocked or terminated threads
             if (t.state == TERMINATED || t.state == BLOCKED)
                 continue;
 
             allDone = false;
+
             t.state = RUNNING;
             cout << "\n[RUNNING] Thread " << t.id << "\n";
 
             for (int q = 0; q < quantum; q++) {
+
                 t.cpuUsed++;
                 cout << "  Tick: CPU used = " << t.cpuUsed
                      << "/" << t.burstTime << "\n";
 
-                // ---------------- DEMONSTRATION RULES ----------------
-		if(t.cpuUsed >= t.burstTime) {
-		    t.state = TERMINATED;
-		    t.waitingOn = "-";
-		    cout << "  -> Thead " << t.id << " TERMINATED\n";
-		    break;
-		}
+                // ================= MONITOR DEMO RULES =================
 
-		int action = rand() % 100;
+                if (t.id == 0 && t.cpuUsed == 2) {
+                    monitorObj.enter(0);
+                }
 
-		if(action < 10){
-		    Semaphore* s = randomSemaphore();
-		    cout << "Thread " << t.id << " RANDOM WAIT on "
-			 << s->name << "\n";
-		    s->waitOp(t.id);
+                if (t.id == 0 && t.cpuUsed == 3) {
+                    monitorObj.waitCV(0);
+                    break;
+                }
 
-		    if (t.state == BLOCKED) break;
-		} else if (action < 20) {
-		    Semaphore* s = randomSemaphore();
-		    cout << "Thread " << t.id << " RANDOM SIGNAL "
-			 << s->name << "\n";
-		    s->signalOp();
-		}
-	    }
+                if (t.id == 1 && t.cpuUsed == 2) {
+                    monitorObj.enter(1);
+                }
 
-	    if (t.state == RUNNING)
-		t.state = READY;
+                if (t.id == 1 && t.cpuUsed == 3) {
+                    monitorObj.signalCV(1);
+                }
 
-	    printTable();
-	}
+                if (t.id == 1 && t.cpuUsed == 4) {
+                    monitorObj.exitMonitor(1);
+                }
+
+                // After waking, Thread 0 will re-enter monitor
+                if (t.id == 0 && t.cpuUsed == 4) {
+                    cout << "Thread 0 re-enters monitor after waking\n";
+                    monitorObj.enter(0);
+                }
+
+                // =======================================================
+
+                if (t.cpuUsed >= t.burstTime) {
+                    t.state = TERMINATED;
+                    cout << "  -> Thread " << t.id << " TERMINATED\n";
+                    break;
+                }
+            }
+
+            if (t.state == RUNNING)
+                t.state = READY;
+
+            printTable();
+        }
     }
-
 
     cout << "\n===== All Threads Completed =====\n";
 }
@@ -179,9 +230,9 @@ int main() {
     srand(time(0));
 
     createThread(10, 1);  // Thread 0 (wait S1)
-    createThread(8, 1);   // Thread 1 (wait S2)
-    createThread(9, 2);   // Thread 2 (signal S1)
-    createThread(6, 3);   // Thread 3 (signal S2)
+    createThread(10, 1);   // Thread 1 (wait S2)
+    createThread(8, 2);   // Thread 2 (signal S1)
+    createThread(7, 3);   // Thread 3 (signal S2)
 
     cout << "\nInitial Thread States:\n";
     printTable();
